@@ -2,8 +2,10 @@ package com.example.colormeet
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -27,6 +30,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -35,17 +40,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.navigation.compose.*
-import coil.compose.AsyncImage
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.storage.FirebaseStorage
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.*
 
-// Słownik kolorów - ułatwia przesyłanie danych przez bazę i nawigację
 val ColorMap = mapOf(
     "Czerwony" to 0xFFE53935,
     "Zielony" to 0xFF43A047,
@@ -59,11 +60,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
-        setContent {
-            MaterialTheme {
-                ColorMeetApp()
-            }
-        }
+        setContent { MaterialTheme { ColorMeetApp() } }
     }
 }
 
@@ -83,24 +80,22 @@ fun ColorMeetApp() {
             val isHost = entry.arguments?.getString("host")?.toBoolean() ?: false
 
             WaitingRoomScreen(pin, name, isHost, onStartGame = { colorName ->
-                navController.navigate("game/$pin/$colorName") {
-                    popUpTo("home") { inclusive = false }
-                }
+                navController.navigate("game/$pin/$colorName") { popUpTo("home") { inclusive = false } }
             })
         }
         composable("game/{pin}/{colorName}") { entry ->
             val pin = entry.arguments?.getString("pin") ?: ""
             val colorName = entry.arguments?.getString("colorName") ?: "Czerwony"
-
-            // Pobieramy wartość koloru z naszego słownika
             val colorVal = ColorMap[colorName] ?: 0xFFE53935
 
             GameScreen(pin = pin, assignedColor = Color(colorVal), onFinishGame = {
-                navController.navigate("map")
+                navController.navigate("map/$pin") // Przekazujemy PIN do mapy!
             })
         }
-        composable("map") {
-            MapScreen(onBackToLobby = {
+        // Mapa odbiera PIN
+        composable("map/{pin}") { entry ->
+            val pin = entry.arguments?.getString("pin") ?: ""
+            MapScreen(pin = pin, onBackToLobby = {
                 navController.navigate("home") { popUpTo("home") { inclusive = true } }
             })
         }
@@ -115,28 +110,13 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
     var isLoading by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Color Meet", style = MaterialTheme.typography.headlineLarge)
-        Spacer(modifier = Modifier.height(32.dp))
-
-        OutlinedTextField(
-            value = playerName,
-            onValueChange = { playerName = it },
-            label = { Text("Twoje imię") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        OutlinedTextField(
-            value = pinInput,
-            onValueChange = { if (it.length <= 4) pinInput = it },
-            label = { Text("PIN pokoju (dołącz)") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(Modifier.height(32.dp))
+        OutlinedTextField(value = playerName, onValueChange = { playerName = it }, label = { Text("Twoje imię") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(32.dp))
+        OutlinedTextField(value = pinInput, onValueChange = { if (it.length <= 4) pinInput = it }, label = { Text("PIN pokoju (dołącz)") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(16.dp))
 
         Button(
             onClick = {
@@ -144,8 +124,7 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
                     isLoading = true
                     db.collection("rooms").document(pinInput).get().addOnSuccessListener { doc ->
                         if (doc.exists() && doc.getString("status") == "LOBBY") {
-                            db.collection("rooms").document(pinInput)
-                                .update("players", FieldValue.arrayUnion(playerName))
+                            db.collection("rooms").document(pinInput).update("players", FieldValue.arrayUnion(playerName))
                                 .addOnSuccessListener {
                                     isLoading = false
                                     onNavigateToWaitingRoom(pinInput, playerName, false)
@@ -156,9 +135,7 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
                         }
                     }
                 }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !isLoading
+            }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading
         ) { Text("DOŁĄCZ DO GRY") }
 
         Text("— lub —", modifier = Modifier.padding(vertical = 16.dp))
@@ -171,18 +148,15 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
                     val roomData = hashMapOf(
                         "status" to "LOBBY",
                         "players" to listOf(playerName),
-                        "colors" to emptyMap<String, String>()
+                        "colors" to emptyMap<String, String>(),
+                        "photos" to emptyList<String>() // Nowa lista na zaszyfrowane zdjęcia
                     )
                     db.collection("rooms").document(newPin).set(roomData).addOnSuccessListener {
                         isLoading = false
                         onNavigateToWaitingRoom(newPin, playerName, true)
                     }
-                } else {
-                    Toast.makeText(context, "Podaj imię!", Toast.LENGTH_SHORT).show()
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !isLoading
+                } else { Toast.makeText(context, "Podaj imię!", Toast.LENGTH_SHORT).show() }
+            }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading
         ) { Text("STWÓRZ NOWY POKÓJ") }
     }
 }
@@ -211,27 +185,20 @@ fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartG
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Poczekalnia", style = MaterialTheme.typography.headlineLarge)
         Text("PIN: $pin", style = MaterialTheme.typography.headlineMedium, color = Color.Gray)
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(Modifier.height(32.dp))
         Text("Gracze:", style = MaterialTheme.typography.titleLarge)
-
-        players.forEach { player ->
-            Text(text = "👤 $player", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(4.dp))
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
+        players.forEach { Text(text = "👤 $it", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(4.dp)) }
+        Spacer(Modifier.weight(1f))
 
         if (isHost) {
             Button(
                 onClick = {
                     val availableColors = ColorMap.keys.toList().shuffled()
                     val colorAssignments = mutableMapOf<String, String>()
-                    players.forEachIndexed { index, name ->
-                        colorAssignments[name] = availableColors[index % availableColors.size]
-                    }
+                    players.forEachIndexed { index, name -> colorAssignments[name] = availableColors[index % availableColors.size] }
                     db.collection("rooms").document(pin).update("status", "PLAYING", "colors", colorAssignments)
                 },
-                modifier = Modifier.fillMaxWidth().height(60.dp),
-                enabled = players.isNotEmpty()
+                modifier = Modifier.fillMaxWidth().height(60.dp), enabled = players.isNotEmpty()
             ) { Text("ROZPOCZNIJ GRĘ") }
         } else {
             Text("Czekam na hosta...", color = Color.Gray)
@@ -243,13 +210,10 @@ fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartG
 @Composable
 fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
     val context = LocalContext.current
-    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val imageCapture = remember { ImageCapture.Builder().build() }
     var isUploading by remember { mutableStateOf(false) }
+    var hasPerms by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
 
-    var hasPerms by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-    }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         hasPerms = it[Manifest.permission.CAMERA] == true
     }
@@ -271,40 +235,49 @@ fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
 
                 if (isUploading) {
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.padding(bottom = 32.dp))
-                } else Button(
-                    onClick = {
-                        isUploading = true
-                        val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
-                        val options = ImageCapture.OutputFileOptions.Builder(file).build()
+                } else {
+                    Button(
+                        onClick = {
+                            isUploading = true
+                            val file = File(context.cacheDir, "photo_temp.jpg")
+                            val options = ImageCapture.OutputFileOptions.Builder(file).build()
 
-                        imageCapture.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                // 1. Wyciągamy w 100% poprawny, natywny adres pliku prosto z aparatu Motoroli
-                                val savedUri = output.savedUri ?: Uri.fromFile(file)
+                            imageCapture.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
+                                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                                    try {
+                                        // 1. Zmniejszamy obrazek
+                                        val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                                        val maxDim = 400f // Skalujemy do max 400 pikseli, by zmieścić się w limicie
+                                        val scale = maxDim / maxOf(bitmap.width, bitmap.height)
+                                        val newWidth = (bitmap.width * scale).toInt()
+                                        val newHeight = (bitmap.height * scale).toInt()
+                                        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
 
-                                // 2. Podajemy Firebase dokładny adres Twojego wiadra z pliku JSON
-                                val storage = FirebaseStorage.getInstance("gs://colormeet-app.firebasestorage.app")
-                                val storageRef = storage.reference.child("rooms/$pin/${file.name}")
+                                        // 2. Zamieniamy na tekst (Base64)
+                                        val baos = ByteArrayOutputStream()
+                                        resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos) // Jakość 50%
+                                        val base64String = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
-                                storageRef.putFile(savedUri).addOnSuccessListener {
-                                    isUploading = false
-                                    onFinishGame() // Sukces! Przenosimy na mapę
-                                }.addOnFailureListener { e ->
-                                    isUploading = false
-                                    Toast.makeText(context, "Błąd wysyłania: ${e.message}", Toast.LENGTH_LONG).show()
+                                        // 3. Wrzucamy do darmowej Bazy Danych
+                                        FirebaseFirestore.getInstance().collection("rooms").document(pin)
+                                            .update("photos", FieldValue.arrayUnion(base64String))
+                                            .addOnSuccessListener {
+                                                isUploading = false
+                                                onFinishGame()
+                                            }.addOnFailureListener {
+                                                isUploading = false
+                                                Toast.makeText(context, "Błąd Firestore", Toast.LENGTH_SHORT).show()
+                                            }
+                                    } catch (e: Exception) {
+                                        isUploading = false
+                                        Toast.makeText(context, "Błąd kompresji", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
-                            }
-                            override fun onError(exc: ImageCaptureException) {
-                                isUploading = false
-                                Toast.makeText(context, "Błąd aparatu: ${exc.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        })
-                    },
-                    modifier = Modifier.size(80.dp).padding(bottom = 16.dp),
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White)
-                ) {
-                    Box(Modifier.fillMaxSize().background(Color.Transparent))
+                                override fun onError(exc: ImageCaptureException) { isUploading = false }
+                            })
+                        },
+                        modifier = Modifier.size(80.dp).padding(bottom = 16.dp), shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = Color.White)
+                    ) { Box(Modifier.fillMaxSize().background(Color.Transparent)) }
                 }
             }
         }
@@ -336,18 +309,34 @@ fun CameraPreview(imageCapture: ImageCapture) {
 }
 
 @Composable
-fun MapScreen(onBackToLobby: () -> Unit) {
-    val context = LocalContext.current
-    val photos = remember { context.cacheDir.listFiles { file -> file.extension == "jpg" }?.toList() ?: emptyList() }
+fun MapScreen(pin: String, onBackToLobby: () -> Unit) {
+    var photosList by remember { mutableStateOf(listOf<ImageBitmap>()) }
+
+    // Nasłuchujemy zmian w pokoju - każde zrobione zdjęcie od razu pojawi się u wszystkich
+    LaunchedEffect(pin) {
+        FirebaseFirestore.getInstance().collection("rooms").document(pin)
+            .addSnapshotListener { snap, _ ->
+                if (snap != null && snap.exists()) {
+                    val base64Photos = snap.get("photos") as? List<String> ?: emptyList()
+                    // Odszyfrowujemy tekst z powrotem na BitMapy
+                    photosList = base64Photos.mapNotNull { b64 ->
+                        try {
+                            val bytes = Base64.decode(b64, Base64.DEFAULT)
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                        } catch (e: Exception) { null }
+                    }
+                }
+            }
+    }
 
     Column(Modifier.fillMaxSize().background(Color(0xFF121212)), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Kolaż Graczy", style = MaterialTheme.typography.headlineMedium, color = Color.White, modifier = Modifier.padding(vertical = 32.dp))
 
         LazyVerticalGrid(columns = GridCells.Fixed(2), modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            items(photos) { photo ->
-                AsyncImage(
-                    model = photo,
-                    contentDescription = null,
+            items(photosList) { bitmap ->
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = "Zrobione zdjęcie",
                     modifier = Modifier.padding(4.dp).aspectRatio(1f).clip(RoundedCornerShape(12.dp)),
                     contentScale = ContentScale.Crop
                 )
