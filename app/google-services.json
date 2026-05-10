@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "877984273527",
+    "project_id": "colormeet-app",
+    "storage_bucket": "colormeet-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:877984273527:android:8d35edaf8f75e714e76272",
+        "android_client_info": {
+          "package_name": "com.example.colormeet"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwYjsoIY5X9hok3wXn44Lgh_WwG8L_Mog"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

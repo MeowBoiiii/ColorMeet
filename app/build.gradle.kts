@@ -1,8 +1,8 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.services)
 }
-
 android {
     namespace = "com.example.colormeet"
     compileSdk {
@@ -42,6 +42,9 @@ android {
 dependencies {
     val camerax_version = "1.3.1"
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("com.google.firebase:firebase-storage-ktx:20.3.0")
+    implementation("com.google.firebase:firebase-firestore-ktx:24.10.0")
     implementation("com.google.android.gms:play-services-location:21.2.0")
     implementation("androidx.camera:camera-core:${camerax_version}")
     implementation("androidx.camera:camera-camera2:${camerax_version}")
