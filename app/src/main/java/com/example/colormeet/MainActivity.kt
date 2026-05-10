@@ -79,20 +79,21 @@ fun ColorMeetApp() {
             val name = entry.arguments?.getString("name") ?: ""
             val isHost = entry.arguments?.getString("host")?.toBoolean() ?: false
 
-            WaitingRoomScreen(pin, name, isHost, onStartGame = { colorName ->
-                navController.navigate("game/$pin/$colorName") { popUpTo("home") { inclusive = false } }
+            // Przekazujemy teraz do gry również targetCount (ile zdjęć trzeba zrobić)
+            WaitingRoomScreen(pin, name, isHost, onStartGame = { colorName, targetCount ->
+                navController.navigate("game/$pin/$colorName/$targetCount") { popUpTo("home") { inclusive = false } }
             })
         }
-        composable("game/{pin}/{colorName}") { entry ->
+        composable("game/{pin}/{colorName}/{targetCount}") { entry ->
             val pin = entry.arguments?.getString("pin") ?: ""
             val colorName = entry.arguments?.getString("colorName") ?: "Czerwony"
+            val targetCount = entry.arguments?.getString("targetCount")?.toIntOrNull() ?: 3
             val colorVal = ColorMap[colorName] ?: 0xFFE53935
 
-            GameScreen(pin = pin, assignedColor = Color(colorVal), onFinishGame = {
-                navController.navigate("map/$pin") // Przekazujemy PIN do mapy!
+            GameScreen(pin = pin, assignedColor = Color(colorVal), targetCount = targetCount, onFinishGame = {
+                navController.navigate("map/$pin")
             })
         }
-        // Mapa odbiera PIN
         composable("map/{pin}") { entry ->
             val pin = entry.arguments?.getString("pin") ?: ""
             MapScreen(pin = pin, onBackToLobby = {
@@ -149,7 +150,8 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
                         "status" to "LOBBY",
                         "players" to listOf(playerName),
                         "colors" to emptyMap<String, String>(),
-                        "photos" to emptyList<String>() // Nowa lista na zaszyfrowane zdjęcia
+                        "photos" to emptyList<String>(),
+                        "targetPhotoCount" to 3 // Domyślnie ustawiamy na 3 zdjęcia
                     )
                     db.collection("rooms").document(newPin).set(roomData).addOnSuccessListener {
                         isLoading = false
@@ -162,20 +164,22 @@ fun HomeScreen(onNavigateToWaitingRoom: (String, String, Boolean) -> Unit) {
 }
 
 @Composable
-fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartGame: (String) -> Unit) {
+fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartGame: (String, Int) -> Unit) {
     val db = FirebaseFirestore.getInstance()
     var players by remember { mutableStateOf(listOf<String>()) }
     var status by remember { mutableStateOf("LOBBY") }
+    var targetPhotoCount by remember { mutableStateOf(3) }
 
     DisposableEffect(pin) {
         val listener = db.collection("rooms").document(pin).addSnapshotListener { snap, _ ->
             if (snap != null && snap.exists()) {
                 players = snap.get("players") as? List<String> ?: emptyList()
                 status = snap.getString("status") ?: "LOBBY"
+                targetPhotoCount = snap.getLong("targetPhotoCount")?.toInt() ?: 3
 
                 if (status == "PLAYING") {
                     val colorsMap = snap.get("colors") as? Map<String, String>
-                    colorsMap?.get(playerName)?.let { onStartGame(it) }
+                    colorsMap?.get(playerName)?.let { onStartGame(it, targetPhotoCount) }
                 }
             }
         }
@@ -188,9 +192,22 @@ fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartG
         Spacer(Modifier.height(32.dp))
         Text("Gracze:", style = MaterialTheme.typography.titleLarge)
         players.forEach { Text(text = "👤 $it", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(4.dp)) }
+
         Spacer(Modifier.weight(1f))
 
+        // Interfejs do zmiany ilości zdjęć
         if (isHost) {
+            Text("Liczba zdjęć do zrobienia:", color = Color.Gray)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)) {
+                OutlinedButton(onClick = { if (targetPhotoCount > 1) db.collection("rooms").document(pin).update("targetPhotoCount", targetPhotoCount - 1) }) {
+                    Text("-", style = MaterialTheme.typography.titleLarge)
+                }
+                Text("$targetPhotoCount", style = MaterialTheme.typography.headlineMedium)
+                OutlinedButton(onClick = { if (targetPhotoCount < 10) db.collection("rooms").document(pin).update("targetPhotoCount", targetPhotoCount + 1) }) {
+                    Text("+", style = MaterialTheme.typography.titleLarge)
+                }
+            }
+
             Button(
                 onClick = {
                     val availableColors = ColorMap.keys.toList().shuffled()
@@ -201,6 +218,8 @@ fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartG
                 modifier = Modifier.fillMaxWidth().height(60.dp), enabled = players.isNotEmpty()
             ) { Text("ROZPOCZNIJ GRĘ") }
         } else {
+            Text("Gramy do: $targetPhotoCount zdjęć", style = MaterialTheme.typography.titleMedium, color = Color.White)
+            Spacer(Modifier.height(16.dp))
             Text("Czekam na hosta...", color = Color.Gray)
             CircularProgressIndicator(modifier = Modifier.padding(16.dp))
         }
@@ -208,12 +227,14 @@ fun WaitingRoomScreen(pin: String, playerName: String, isHost: Boolean, onStartG
 }
 
 @Composable
-fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
+fun GameScreen(pin: String, assignedColor: Color, targetCount: Int, onFinishGame: () -> Unit) {
     val context = LocalContext.current
     val imageCapture = remember { ImageCapture.Builder().build() }
-    var isUploading by remember { mutableStateOf(false) }
-    var hasPerms by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
 
+    var isUploading by remember { mutableStateOf(false) }
+    var photosTaken by remember { mutableStateOf(0) }
+
+    var hasPerms by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         hasPerms = it[Manifest.permission.CAMERA] == true
     }
@@ -225,11 +246,15 @@ fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
             Icon(Icons.Default.Add, "Celownik", tint = Color.White.copy(0.5f), modifier = Modifier.size(64.dp).align(Alignment.Center))
 
             Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.CenterHorizontally) {
-                Surface(shape = CircleShape, color = Color.Black.copy(0.6f)) {
+                // Górny pasek z licznikiem i stałym kolorem
+                Surface(shape = RoundedCornerShape(100.dp), color = Color.Black.copy(0.6f)) {
                     Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${photosTaken + 1}/$targetCount", color = Color.Yellow, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.width(16.dp))
                         Text("Znajdź:", color = Color.White)
                         Spacer(Modifier.width(16.dp))
-                        Box(Modifier.size(40.dp).background(assignedColor, CircleShape))
+                        // Zawsze używamy koloru przydzielonego na starcie
+                        Box(Modifier.size(30.dp).background(assignedColor, CircleShape))
                     }
                 }
 
@@ -245,28 +270,30 @@ fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
                             imageCapture.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                                     try {
-                                        // 1. Zmniejszamy obrazek
                                         val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-                                        val maxDim = 400f // Skalujemy do max 400 pikseli, by zmieścić się w limicie
+                                        val maxDim = 400f
                                         val scale = maxDim / maxOf(bitmap.width, bitmap.height)
-                                        val newWidth = (bitmap.width * scale).toInt()
-                                        val newHeight = (bitmap.height * scale).toInt()
-                                        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+                                        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
 
-                                        // 2. Zamieniamy na tekst (Base64)
                                         val baos = ByteArrayOutputStream()
-                                        resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos) // Jakość 50%
+                                        resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 50, baos)
                                         val base64String = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT)
 
-                                        // 3. Wrzucamy do darmowej Bazy Danych
                                         FirebaseFirestore.getInstance().collection("rooms").document(pin)
                                             .update("photos", FieldValue.arrayUnion(base64String))
                                             .addOnSuccessListener {
-                                                isUploading = false
-                                                onFinishGame()
+                                                photosTaken++
+                                                if (photosTaken >= targetCount) {
+                                                    isUploading = false
+                                                    onFinishGame() // Osiągnięto cel - koniec gry!
+                                                } else {
+                                                    isUploading = false
+                                                    // Zmieniony komunikat
+                                                    Toast.makeText(context, "Zdjęcie zapisane! Szukaj kolejnego obiektu w TYM SAMYM kolorze.", Toast.LENGTH_LONG).show()
+                                                }
                                             }.addOnFailureListener {
                                                 isUploading = false
-                                                Toast.makeText(context, "Błąd Firestore", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "Błąd zapisywania wyniku.", Toast.LENGTH_SHORT).show()
                                             }
                                     } catch (e: Exception) {
                                         isUploading = false
@@ -283,7 +310,6 @@ fun GameScreen(pin: String, assignedColor: Color, onFinishGame: () -> Unit) {
         }
     }
 }
-
 @Composable
 fun CameraPreview(imageCapture: ImageCapture) {
     val context = LocalContext.current
@@ -312,13 +338,11 @@ fun CameraPreview(imageCapture: ImageCapture) {
 fun MapScreen(pin: String, onBackToLobby: () -> Unit) {
     var photosList by remember { mutableStateOf(listOf<ImageBitmap>()) }
 
-    // Nasłuchujemy zmian w pokoju - każde zrobione zdjęcie od razu pojawi się u wszystkich
     LaunchedEffect(pin) {
         FirebaseFirestore.getInstance().collection("rooms").document(pin)
             .addSnapshotListener { snap, _ ->
                 if (snap != null && snap.exists()) {
                     val base64Photos = snap.get("photos") as? List<String> ?: emptyList()
-                    // Odszyfrowujemy tekst z powrotem na BitMapy
                     photosList = base64Photos.mapNotNull { b64 ->
                         try {
                             val bytes = Base64.decode(b64, Base64.DEFAULT)
