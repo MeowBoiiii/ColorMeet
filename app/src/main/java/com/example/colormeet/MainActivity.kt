@@ -46,6 +46,8 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import java.io.ByteArrayOutputStream
 import java.io.File
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Add
 
 val ColorMap = mapOf(
     "Czerwony" to 0xFFE53935,
@@ -68,7 +70,17 @@ class MainActivity : ComponentActivity() {
 fun ColorMeetApp() {
     val navController = rememberNavController()
 
-    NavHost(navController = navController, startDestination = "home") {
+    NavHost(navController = navController, startDestination = "splash") {
+
+        // NOWY EKRAN POWITALNY
+        composable("splash") {
+            SplashScreen(onTimeout = {
+                navController.navigate("home") {
+                    popUpTo("splash") { inclusive = true } // Usuwamy splash z historii, żeby nie dało się do niego cofnąć
+                }
+            })
+        }
+
         composable("home") {
             HomeScreen(
                 onNavigateToWaitingRoom = { pin, name, host -> navController.navigate("waiting/$pin/$name/$host") }
@@ -79,7 +91,6 @@ fun ColorMeetApp() {
             val name = entry.arguments?.getString("name") ?: ""
             val isHost = entry.arguments?.getString("host")?.toBoolean() ?: false
 
-            // Przekazujemy teraz do gry również targetCount (ile zdjęć trzeba zrobić)
             WaitingRoomScreen(pin, name, isHost, onStartGame = { colorName, targetCount ->
                 navController.navigate("game/$pin/$colorName/$targetCount") { popUpTo("home") { inclusive = false } }
             })
@@ -368,5 +379,46 @@ fun MapScreen(pin: String, onBackToLobby: () -> Unit) {
         }
 
         Button(onClick = onBackToLobby, modifier = Modifier.fillMaxWidth().padding(16.dp)) { Text("WRÓĆ DO MENU") }
+    }
+}
+
+@Composable
+fun SplashScreen(onTimeout: () -> Unit) {
+    // Odliczamy 2 sekundy i wywołujemy przejście dalej
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(2000)
+        onTimeout()
+    }
+
+    // Wygląd ekranu ładowania
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212)), // Ciemne tło, wygląda bardzo nowocześnie
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            // "Logo" w formie tekstowej i emoji (możesz tu podmienić np. na Image() jeśli dodasz plik graficzny do projektu)
+            Text(
+                text = "📸",
+                style = MaterialTheme.typography.displayLarge.copy(fontSize = 100.sp) // Wielka emotka aparatu
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "COLOR MEET",
+                style = MaterialTheme.typography.headlineLarge,
+                color = Color.White,
+                letterSpacing = 4.sp // Rozstrzelone litery dodają profesjonalizmu
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Znajdź to. Szybciej.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.Gray
+            )
+        }
     }
 }
